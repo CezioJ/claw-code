@@ -447,11 +447,14 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "missing value for --model".to_string())?;
+                validate_model_syntax(value)?;
                 model = resolve_model_alias_with_config(value);
                 index += 2;
             }
             flag if flag.starts_with("--model=") => {
-                model = resolve_model_alias_with_config(&flag[8..]);
+                let value = &flag[8..];
+                validate_model_syntax(value)?;
+                model = resolve_model_alias_with_config(value);
                 index += 1;
             }
             "--output-format" => {
@@ -1033,6 +1036,37 @@ fn resolve_model_alias_with_config(model: &str) -> String {
         return resolve_model_alias(&resolved).to_string();
     }
     resolve_model_alias(trimmed).to_string()
+}
+
+/// Validate model syntax at parse time.
+/// Accepts: known aliases (opus, sonnet, haiku) or provider/model pattern.
+/// Rejects: empty, whitespace-only, strings with spaces, or invalid chars.
+fn validate_model_syntax(model: &str) -> Result<(), String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err("model string cannot be empty".to_string());
+    }
+    // Known aliases are always valid
+    match trimmed {
+        "opus" | "sonnet" | "haiku" => return Ok(()),
+        _ => {}
+    }
+    // Check for spaces (malformed)
+    if trimmed.contains(' ') {
+        return Err(format!(
+            "invalid model syntax: '{}' contains spaces. Use provider/model format or known alias",
+            trimmed
+        ));
+    }
+    // Check provider/model format: provider_id/model_id
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err(format!(
+            "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
+            trimmed
+        ));
+    }
+    Ok(())
 }
 
 fn config_alias_for_current_dir(alias: &str) -> Option<String> {
@@ -8421,6 +8455,7 @@ mod tests {
             request_id: Some("req_jobdori_789".to_string()),
             body: String::new(),
             retryable: true,
+            suggested_action: None,
         };
 
         let rendered = format_user_visible_api_error("session-issue-22", &error);
@@ -8443,6 +8478,7 @@ mod tests {
                 request_id: Some("req_jobdori_790".to_string()),
                 body: String::new(),
                 retryable: true,
+                suggested_action: None,
             }),
         };
 
@@ -8506,6 +8542,7 @@ mod tests {
             request_id: Some("req_ctx_456".to_string()),
             body: String::new(),
             retryable: false,
+            suggested_action: None,
         };
 
         let rendered = format_user_visible_api_error("session-issue-32", &error);
@@ -8537,6 +8574,7 @@ mod tests {
                 request_id: Some("req_ctx_retry_789".to_string()),
                 body: String::new(),
                 retryable: false,
+                suggested_action: None,
             }),
         };
 
