@@ -1190,8 +1190,9 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             let tail = &rest[1..];
             let section = tail.first().cloned();
             if tail.len() > 1 {
+                // #791: append \n hint so split_error_hint extracts it and hint is non-null
                 return Err(format!(
-                    "unexpected extra arguments after `claw config {}`: {}",
+                    "unexpected extra arguments after `claw config {}`: {}\nUsage: claw config [env|hooks|model|plugins|mcp|settings]",
                     tail[0],
                     tail[1..].join(" ")
                 ));
@@ -2091,11 +2092,16 @@ fn parse_system_prompt_args(
             }
             other => {
                 // #152: hint `--output-format json` when user types `--json`.
-                let mut msg = format!("unknown system-prompt option: {other}");
-                if other == "--json" {
-                    msg.push_str("\nDid you mean `--output-format json`?");
-                }
-                return Err(msg);
+                // #790: use unknown_option: prefix + \n hint so classify_error_kind returns
+                // unknown_option and split_error_hint extracts the remediation text.
+                let hint = if other == "--json" {
+                    "Did you mean `--output-format json`? Usage: claw system-prompt [--cwd <dir>] [--date <YYYY-MM-DD>] [--output-format text|json]".to_string()
+                } else {
+                    "Usage: claw system-prompt [--cwd <dir>] [--date <YYYY-MM-DD>] [--output-format text|json]".to_string()
+                };
+                return Err(format!(
+                    "unknown_option: unknown system-prompt option: {other}.\n{hint}"
+                ));
             }
         }
     }
@@ -6281,10 +6287,17 @@ impl LiveCli {
         let cwd = env::current_dir()?;
         match output_format {
             CliOutputFormat::Text => println!("{}", handle_agents_slash_command(args, &cwd)?),
-            CliOutputFormat::Json => println!(
-                "{}",
-                serde_json::to_string_pretty(&handle_agents_slash_command_json(args, &cwd)?)?
-            ),
+            CliOutputFormat::Json => {
+                let value = handle_agents_slash_command_json(args, &cwd)?;
+                // #789: parity with print_mcp/#788 print_skills — exit 1 when envelope
+                // reports an error so automation can rely on exit code instead of
+                // parsing the JSON status field.
+                let is_error = value.get("status").and_then(|v| v.as_str()) == Some("error");
+                println!("{}", serde_json::to_string_pretty(&value)?);
+                if is_error {
+                    std::process::exit(1);
+                }
+            }
         }
         Ok(())
     }
@@ -6428,7 +6441,8 @@ impl LiveCli {
                                 "hint": "Run `claw plugins list` to see available plugins.",
                             });
                             println!("{}", serde_json::to_string_pretty(&obj)?);
-                            return Ok(());
+                            // #789: exit 1 on not-found so automation can rely on exit code
+                            std::process::exit(1);
                         }
                     }
                 }

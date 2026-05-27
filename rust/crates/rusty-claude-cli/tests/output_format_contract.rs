@@ -203,7 +203,9 @@ fn inventory_commands_emit_structured_json_when_requested() {
             isolated_codex.to_str().expect("utf8 codex home"),
         ),
     ];
-    let agents_show_missing = assert_json_command_with_env(
+    // #789: agents show not-found now exits 1 (parity with skills #788);
+    // use run_claw directly instead of assert_json_command_with_env which checks success.
+    let agents_show_out = run_claw(
         &root,
         &[
             "--output-format",
@@ -214,6 +216,12 @@ fn inventory_commands_emit_structured_json_when_requested() {
         ],
         &agents_show_env,
     );
+    assert!(
+        !agents_show_out.status.success(),
+        "agents show not-found must exit non-zero"
+    );
+    let agents_show_missing: serde_json::Value =
+        serde_json::from_slice(&agents_show_out.stdout).expect("agents show stdout should be json");
     assert_eq!(agents_show_missing["kind"], "agents", "agents show kind");
     assert_eq!(agents_show_missing["action"], "show", "agents show action");
     assert_eq!(
@@ -2764,4 +2772,294 @@ fn skills_show_not_found_emits_single_json_object_788() {
         "single JSON object must have skill_not_found error_kind"
     );
     assert_eq!(json_objects[0]["status"], "error");
+}
+
+#[test]
+fn agents_show_not_found_exits_nonzero_789() {
+    // #789: `claw --output-format json agents show <not-found>` returned exit 0 despite
+    // emitting status:"error". print_agents had no error check — just println + Ok(()).
+    // Skills was fixed in #788 (exit 1 via process::exit); agents/plugins had the same gap.
+    let root = unique_temp_dir("agents-show-exit-789");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    let output = run_claw(
+        &root,
+        &[
+            "--output-format",
+            "json",
+            "agents",
+            "show",
+            "no-such-agent-xyz-789",
+        ],
+        &[],
+    );
+    assert!(
+        !output.status.success(),
+        "agents show not-found must exit non-zero (#789), got exit 0"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let j: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("agents show should emit valid JSON");
+    assert_eq!(j["error_kind"], "agent_not_found");
+    assert_eq!(j["status"], "error");
+}
+
+#[test]
+fn plugins_show_not_found_exits_nonzero_789() {
+    // #789: same as agents — `claw --output-format json plugins show <not-found>` exited 0
+    // despite status:"error". The not-found branch used `return Ok(())` instead of exit(1).
+    let root = unique_temp_dir("plugins-show-exit-789");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    let output = run_claw(
+        &root,
+        &[
+            "--output-format",
+            "json",
+            "plugins",
+            "show",
+            "no-such-plugin-xyz-789",
+        ],
+        &[],
+    );
+    assert!(
+        !output.status.success(),
+        "plugins show not-found must exit non-zero (#789), got exit 0"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let j: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("plugins show should emit valid JSON");
+    assert_eq!(j["error_kind"], "plugin_not_found");
+    assert_eq!(j["status"], "error");
+}
+
+#[test]
+fn system_prompt_unknown_option_returns_typed_kind_790() {
+    // #790: `claw --output-format json system-prompt bogus` returned error_kind:"unknown" + hint:null.
+    // The unknown-option branch emitted plain "unknown system-prompt option: bogus" with no typed
+    // prefix. Fix: use unknown_option: prefix + \n usage hint.
+    let root = unique_temp_dir("system-prompt-unknown-opt-790");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    // Generic unknown option
+    let out1 = run_claw(
+        &root,
+        &["--output-format", "json", "system-prompt", "bogus"],
+        &[],
+    );
+    assert!(!out1.status.success());
+    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    let j1: serde_json::Value = stderr1
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .expect("unknown option should emit JSON error");
+    assert_eq!(
+        j1["error_kind"], "unknown_option",
+        "system-prompt unknown option should be unknown_option, got {:?}",
+        j1["error_kind"]
+    );
+    let h1 = j1["hint"]
+        .as_str()
+        .expect("unknown_option must have hint (#790)");
+    assert!(
+        h1.contains("system-prompt") || h1.contains("claw"),
+        "hint should reference system-prompt usage, got: {h1:?}"
+    );
+
+    // Special --json case: hint should mention --output-format json
+    let out2 = run_claw(
+        &root,
+        &["--output-format", "json", "system-prompt", "--json"],
+        &[],
+    );
+    assert!(!out2.status.success());
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    let j2: serde_json::Value = stderr2
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .expect("--json flag should emit JSON error");
+    assert_eq!(j2["error_kind"], "unknown_option");
+    let h2 = j2["hint"]
+        .as_str()
+        .expect("--json case must have hint (#790)");
+    assert!(
+        h2.contains("output-format") || h2.contains("json"),
+        "hint for --json should suggest --output-format json, got: {h2:?}"
+    );
+}
+
+#[test]
+fn config_extra_args_have_non_null_hint_791() {
+    // #791: `claw config show bogus-key` and `claw config set a b` returned
+    // error_kind:"unexpected_extra_args" + hint:null because the error message
+    // "unexpected extra arguments after `claw config ...`: ..." had no \n delimiter.
+    // Fix: appended \n + usage hint to the format string.
+    let root = unique_temp_dir("config-extra-args-791");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    // config show with extra positional arg
+    let out1 = run_claw(
+        &root,
+        &["--output-format", "json", "config", "show", "bogus-key"],
+        &[],
+    );
+    assert!(!out1.status.success());
+    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    let j1: serde_json::Value = stderr1
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .expect("config show extra arg should emit JSON error");
+    assert_eq!(
+        j1["error_kind"], "unexpected_extra_args",
+        "config show extra arg should be unexpected_extra_args, got {:?}",
+        j1["error_kind"]
+    );
+    let h1 = j1["hint"]
+        .as_str()
+        .expect("unexpected_extra_args must have hint (#791)");
+    assert!(
+        h1.contains("config") || h1.contains("claw"),
+        "hint should reference config usage, got: {h1:?}"
+    );
+
+    // config set with extra positionals
+    let out2 = run_claw(
+        &root,
+        &[
+            "--output-format",
+            "json",
+            "config",
+            "set",
+            "bogus-section.key",
+            "value",
+        ],
+        &[],
+    );
+    assert!(!out2.status.success());
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    let j2: serde_json::Value = stderr2
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .expect("config set extra arg should emit JSON error");
+    assert_eq!(j2["error_kind"], "unexpected_extra_args");
+    assert!(
+        j2["hint"].as_str().is_some_and(|h| !h.is_empty()),
+        "config set extra arg must have non-null hint (#791)"
+    );
+}
+
+#[test]
+fn agents_list_flag_shaped_filter_returns_unknown_option_792() {
+    // #792: `claw --output-format json agents list --bogus-flag` silently returned
+    // status:"ok" count:0 instead of an error. The list filter arm in
+    // handle_agents_slash_command_json treated "--bogus-flag" as a name substring
+    // filter (no agents match), producing a false-positive empty success result.
+    // Fix: detect filter tokens starting with "-" and return unknown_option + hint.
+    let root = unique_temp_dir("agents-list-flag-792");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    let output = run_claw(
+        &root,
+        &[
+            "--output-format",
+            "json",
+            "agents",
+            "list",
+            "--unknown-flag",
+        ],
+        &[],
+    );
+    assert!(
+        !output.status.success(),
+        "agents list --unknown-flag must exit non-zero (#792)"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let j: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("agents list flag-filter should emit valid JSON");
+    assert_eq!(
+        j["error_kind"], "unknown_option",
+        "agents list flag-shaped filter must return unknown_option, got {:?}",
+        j["error_kind"]
+    );
+    assert_eq!(j["status"], "error");
+    let h = j["hint"]
+        .as_str()
+        .expect("unknown_option must have hint (#792)");
+    assert!(
+        h.contains("claw agents list") || h.contains("filter"),
+        "hint should reference correct usage, got: {h:?}"
+    );
+}
+
+#[test]
+fn skills_list_flag_shaped_filter_returns_unknown_option_792() {
+    // #792: same gap as agents — `claw skills list --bogus-flag` returned success
+    // with empty list instead of unknown_option error.
+    let root = unique_temp_dir("skills-list-flag-792");
+    fs::create_dir_all(&root).expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .ok();
+
+    let output = run_claw(
+        &root,
+        &[
+            "--output-format",
+            "json",
+            "skills",
+            "list",
+            "--unknown-flag",
+        ],
+        &[],
+    );
+    assert!(
+        !output.status.success(),
+        "skills list --unknown-flag must exit non-zero (#792)"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let j: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("skills list flag-filter should emit valid JSON");
+    assert_eq!(
+        j["error_kind"], "unknown_option",
+        "skills list flag-shaped filter must return unknown_option, got {:?}",
+        j["error_kind"]
+    );
+    assert_eq!(j["status"], "error");
+    assert!(
+        j["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("claw skills list") || h.contains("filter")),
+        "hint should reference correct usage (#792)"
+    );
 }
