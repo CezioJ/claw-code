@@ -86,6 +86,12 @@ cd rust
 ./target/debug/claw prompt "summarize this repository"
 ```
 
+Pipe prompt text through stdin when automation already produces the prompt body:
+
+```bash
+printf 'summarize this repository\n' | ./target/debug/claw prompt --output-format json
+```
+
 ### Shorthand prompt mode
 
 ```bash
@@ -187,17 +193,22 @@ cd rust
 ./target/debug/claw --permission-mode read-only prompt "summarize Cargo.toml"
 ./target/debug/claw --permission-mode workspace-write prompt "update README.md"
 ./target/debug/claw --allowedTools read,glob "inspect the runtime crate"
+./target/debug/claw --cwd ../other-workspace status --output-format json
 ```
 
-Supported permission modes:
+Global workspace override flags: `--cwd PATH`, `-C PATH`, and `--directory PATH` are accepted before any subcommand. They are validated before command dispatch and take precedence over the process `$PWD`; invalid paths return typed `invalid_cwd` JSON errors in JSON mode.
 
-- `read-only`
-- `workspace-write`
-- `danger-full-access`
+`--allowedTools` accepts canonical snake_case tool names (for example `read_file`, `glob_search`, `web_fetch`) plus documented aliases such as `read`, `glob`, `Read`, and `WebFetch`. `claw status --output-format json` exposes `allowed_tools.available` and `allowed_tools.aliases`, and invalid values return typed `invalid_tool_name` JSON with `tool_name`, `available`, and `tool_aliases`. A missing value before a subcommand or another flag returns `missing_argument` with `argument:"--allowedTools"`.
+
+Supported permission modes (default: `workspace-write`):
+
+- `read-only` allows inspection-only local tools such as file reads, glob/grep searches, local skills, and status-style reporting. It does not allow workspace mutation, network-fetch/search tools, or arbitrary command execution.
+- `workspace-write` is the safe default. It allows reads plus direct file-editing tools inside the current workspace, including write/edit/notebook/config/plan-mode updates, while still gating network-fetch/search tools, arbitrary shell execution, subagent launches, REPL subprocesses, and other full-access tools behind an explicit escalation.
+- `danger-full-access` allows every registered tool requirement, including arbitrary command execution, web fetch/search, subagent launches, subprocess REPLs, and unrestricted tool access. Select it only with an explicit `--permission-mode danger-full-access`, `--dangerously-skip-permissions`, `--skip-permissions`, env, or config opt-in.
 
 Model aliases currently supported by the CLI:
 
-- `opus` → `claude-opus-4-6`
+- `opus` → `claude-opus-4-7`
 - `sonnet` → `claude-sonnet-4-6`
 - `haiku` → `claude-haiku-4-5-20251213`
 
@@ -292,6 +303,18 @@ cd rust
 ./target/debug/claw --model "llama3.2" prompt "summarize this repository in one sentence"
 ```
 
+For Ollama tags with punctuation (for example `qwen2.5-coder:7b`), `OPENAI_BASE_URL` selects the local OpenAI-compatible route even when `OPENAI_API_KEY` is unset:
+
+```bash
+export OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
+unset OPENAI_API_KEY
+
+cd rust
+./target/debug/claw --model "qwen2.5-coder:7b" prompt "reply with ready"
+```
+
+If the local server exposes a slash-containing model ID, prefix it with `local/` so Claw selects the OpenAI-compatible transport while sending the remainder verbatim on the wire: `--model "local/Qwen/Qwen3.6-27B-FP8"`.
+
 ### OpenRouter
 
 ```bash
@@ -334,7 +357,7 @@ Reasoning variants (`qwen-qwq-*`, `qwq-*`, `*-thinking`) automatically strip `te
 
 The OpenAI-compatible backend also serves as the gateway for **OpenRouter**, **Ollama**, and any other service that speaks the OpenAI `/v1/chat/completions` wire format — just point `OPENAI_BASE_URL` at the service.
 
-**Model-name prefix routing:** If a model name starts with `openai/`, `gpt-`, `qwen/`, `qwen-`, `kimi/`, or `kimi-`, the provider is selected by the prefix regardless of which env vars are set. This prevents accidental misrouting to Anthropic when multiple credentials exist in the environment. For the default OpenAI API, `openai/` is a routing prefix and is stripped before the request hits the wire. For a custom `OPENAI_BASE_URL`, slash-containing OpenAI-compatible slugs (for example OpenRouter-style `openai/gpt-4.1-mini`) are preserved so the gateway receives the model ID it expects.
+**Model-name prefix routing:** If a model name starts with `openai/`, `local/`, `gpt-`, `qwen/`, `qwen-`, `kimi/`, or `kimi-`, the provider is selected by the prefix regardless of which env vars are set. This prevents accidental misrouting to Anthropic when multiple credentials exist in the environment. For the default OpenAI API and local/private OpenAI-compatible endpoints, `openai/` is a routing prefix and is stripped before the request hits the wire. For non-local custom `OPENAI_BASE_URL` gateways, slash-containing OpenAI-compatible slugs (for example OpenRouter-style `openai/gpt-4.1-mini`) are preserved so the gateway receives the model ID it expects. The `local/` prefix is an explicit escape hatch for local slash-containing model IDs: it is stripped while the rest of the model ID is sent verbatim.
 
 ### Tested models and aliases
 
@@ -342,17 +365,19 @@ These are the models registered in the built-in alias table with known token lim
 
 | Alias | Resolved model name | Provider | Max output tokens | Context window |
 |---|---|---|---|---|
-| `opus` | `claude-opus-4-6` | Anthropic | 32 000 | 200 000 |
+| `opus` | `claude-opus-4-7` | Anthropic | 32 000 | 200 000 |
 | `sonnet` | `claude-sonnet-4-6` | Anthropic | 64 000 | 200 000 |
 | `haiku` | `claude-haiku-4-5-20251213` | Anthropic | 64 000 | 200 000 |
 | `grok` / `grok-3` | `grok-3` | xAI | 64 000 | 131 072 |
 | `grok-mini` / `grok-3-mini` | `grok-3-mini` | xAI | 64 000 | 131 072 |
 | `grok-2` | `grok-2` | xAI | — | — |
 | `kimi` | `kimi-k2.5` | DashScope | 16 384 | 256 000 |
+| `qwen-max` | `qwen-max` | DashScope | 8 192 | 131 072 |
+| `qwen-plus` | `qwen-plus` | DashScope | 8 192 | 131 072 |
 | `gpt-4.1` / `gpt-4.1-mini` / `gpt-4.1-nano` | same | OpenAI-compatible | 32 768 | 1 047 576 |
 | `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.4-nano` | same | OpenAI-compatible | 128 000 | 1 000 000 / 400 000 |
 
-Any model name that does not match an alias is passed through verbatim after provider routing is resolved. This is how you use OpenRouter model slugs (`openai/gpt-4.1-mini` with a custom `OPENAI_BASE_URL`), Ollama tags (`llama3.2`), or full Anthropic model IDs (`claude-sonnet-4-20250514`).
+Any model name that does not match an alias is passed through verbatim after provider routing is resolved. This is how you use OpenRouter model slugs (`openai/gpt-4.1-mini` with a custom `OPENAI_BASE_URL`), Ollama tags (`llama3.2` or `qwen2.5-coder:7b`), slash-containing local IDs (`local/Qwen/Qwen3.6-27B-FP8`), or full Anthropic model IDs (`claude-sonnet-4-20250514`).
 
 ### User-defined aliases
 
@@ -362,7 +387,7 @@ You can add custom aliases in any settings file (`~/.claw/settings.json`, `.claw
 {
   "aliases": {
     "fast": "claude-haiku-4-5-20251213",
-    "smart": "claude-opus-4-6",
+    "smart": "claude-opus-4-7",
     "cheap": "grok-3-mini"
   }
 }
@@ -370,13 +395,15 @@ You can add custom aliases in any settings file (`~/.claw/settings.json`, `.claw
 
 Local project settings override user-level settings. Aliases resolve through the built-in table, so `"fast": "haiku"` also works.
 
+Model selection precedence is CLI flag, environment, config, then default. The environment model slot accepts `CLAW_MODEL`, `ANTHROPIC_MODEL`, and `ANTHROPIC_DEFAULT_MODEL` in that order; aliases from those variables are resolved and validated before provider startup. `claw --output-format json status` exposes `model_raw`, `model_alias_resolved_to`, and `model_env_var` so automation can see the winning value.
+
 ### How provider detection works
 
 1. If the resolved model name starts with `claude` → Anthropic.
 2. If it starts with `grok` → xAI.
-3. If it starts with `openai/` or `gpt-` → OpenAI-compatible.
+3. If it starts with `openai/`, `local/`, or `gpt-` → OpenAI-compatible.
 4. If it starts with `qwen/`, `qwen-`, `kimi/`, or `kimi-` → DashScope-compatible OpenAI wire format.
-5. If `OPENAI_BASE_URL` and `OPENAI_API_KEY` are set, unknown model names route to the OpenAI-compatible client for local/gateway servers.
+5. If `OPENAI_BASE_URL` is set, local-looking unknown model names such as `llama3.2` or `qwen2.5-coder:7b` route to the OpenAI-compatible client for local/gateway servers.
 6. Otherwise, `claw` checks which credential is set: Anthropic first, then OpenAI, then xAI. If only `OPENAI_BASE_URL` is set, it still routes to OpenAI-compatible for authless local servers.
 7. If nothing matches, it defaults to Anthropic.
 
@@ -452,11 +479,12 @@ let client = build_http_client_with(&config).expect("proxy client");
 
 ## Skills
 
-Use `/skills list` in the interactive REPL or `claw skills --output-format json` from the direct CLI to inspect installed skills. For offline/local installs, install the directory that contains `SKILL.md`, then verify the discovered name before invoking it:
+Use `/skills list` in the interactive REPL or `claw skills --output-format json` from the direct CLI to inspect installed skills. For offline/local installs, install the directory that contains `SKILL.md`, then verify the discovered name before invoking it. `skills install`, `skills uninstall`, and `agents create` are local filesystem lifecycle commands; they do not require provider credentials.
 
 ```text
 /skills install /absolute/path/to/my-skill
 /skills list
+/skills uninstall my-skill
 /skills my-skill
 ```
 
@@ -469,6 +497,7 @@ cd rust
 ./target/debug/claw status
 ./target/debug/claw sandbox
 ./target/debug/claw agents
+./target/debug/claw agents create my-agent
 ./target/debug/claw mcp
 ./target/debug/claw skills
 ./target/debug/claw system-prompt --cwd .. --date 2026-04-04
@@ -488,12 +517,22 @@ git clone https://github.com/Xquik-dev/tweetclaw
 cd claw-code/rust
 ./target/debug/claw skills install ../../tweetclaw/skills/tweetclaw
 ./target/debug/claw skills show tweetclaw
+./target/debug/claw skills uninstall tweetclaw
 ```
 
 TweetClaw gives `claw` users a local skill guide for OpenClaw/Xquik workflows
 such as tweet search, reply search, follower export, monitors, webhooks, and
 approval-gated posting. Configure any Xquik credentials outside the prompt and
 avoid pasting API keys into chat.
+
+## Author a local agent
+
+`claw agents create <name>` scaffolds a local `.claw/agents/<name>.toml` file for the current workspace. The scaffold is intentionally small so you can edit the description, model, and reasoning effort before listing or invoking agents:
+
+```bash
+./target/debug/claw agents create release-checker
+./target/debug/claw agents list
+```
 
 ## Session management
 
@@ -516,6 +555,47 @@ Runtime config is loaded in this order, with later entries overriding earlier on
 3. `<repo>/.claw.json`
 4. `<repo>/.claw/settings.json`
 5. `<repo>/.claw/settings.local.json`
+
+The list is also the precedence chain: project-local settings override project settings, project settings override the legacy project `.claw.json`, and project files override user files. `claw --output-format json config` includes each discovered file's `precedence_rank`, `wins_for_keys`, and `shadowed_keys` so automation can see which file controls each effective key without reimplementing the merge order.
+
+## Hook configuration
+
+`hooks.PreToolUse`, `hooks.PostToolUse`, and `hooks.PostToolUseFailure` accept either legacy command strings or object-style entries with a `matcher` and nested command hooks:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      "echo legacy hook",
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "scripts/audit-bash.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Object-style matchers are optional. When present, they match tool names case-insensitively and support `*` wildcards plus comma or pipe separated alternatives. Nested hook `type` may be omitted or set to `"command"`; each nested command runs in configuration order.
+
+## Project instruction rules
+
+In addition to root instruction files such as `CLAUDE.md`, `AGENTS.md`, `.claw/CLAUDE.md`, `.claude/CLAUDE.md`, and `.claw/instructions.md`, `claw` loads sorted Markdown/text rule files from:
+
+- `<repo>/.claw/rules/` (`.md`, `.txt`, `.mdc`) for shared project rules.
+- `<repo>/.claw/rules.local/` for personal local rules; this path is gitignored.
+
+By default, `claw` also imports detected rules from common AI coding tools such as Cursor (`.cursorrules`, `.cursor/rules/`), GitHub Copilot (`.github/copilot-instructions.md`), Windsurf, Plandex, and Crush. Control this with `rulesImport` in any settings file:
+
+```json
+{
+  "rulesImport": "none"
+}
+```
+
+Use `"auto"` (the default) to import every supported framework, `"none"` to load only Claw instruction/rules files, or an array such as `["cursor", "copilot"]` to import selected frameworks.
 
 ## Mock parity harness
 

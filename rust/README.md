@@ -15,7 +15,7 @@ cargo run -p rusty-claude-cli -- --help
 cargo build --workspace
 
 # Run the interactive REPL
-cargo run -p rusty-claude-cli -- --model claude-opus-4-6
+cargo run -p rusty-claude-cli -- --model claude-opus-4-7
 
 # One-shot prompt
 cargo run -p rusty-claude-cli -- prompt "explain this codebase"
@@ -100,7 +100,7 @@ Primary artifacts:
 | Slash commands (including `/skills`, `/agents`, `/mcp`, `/doctor`, `/plugin`, `/subagent`) | ✅ |
 | Hooks (`/hooks`, config-backed lifecycle hooks) | ✅ |
 | Plugin management surfaces | ✅ |
-| Skills inventory / install surfaces | ✅ |
+| Skills inventory / install / uninstall surfaces | ✅ |
 | Machine-readable JSON output across core CLI surfaces | ✅ |
 
 ## Model Aliases
@@ -109,7 +109,7 @@ Short names resolve to the latest model versions:
 
 | Alias | Resolves To |
 |-------|------------|
-| `opus` | `claude-opus-4-6` |
+| `opus` | `claude-opus-4-7` |
 | `sonnet` | `claude-sonnet-4-6` |
 | `haiku` | `claude-haiku-4-5-20251213` |
 
@@ -124,8 +124,9 @@ Flags:
   --model MODEL
   --output-format text|json
   --permission-mode MODE
-  --dangerously-skip-permissions
-  --allowedTools TOOLS
+  --cwd PATH, -C PATH, --directory PATH
+  --dangerously-skip-permissions, --skip-permissions
+  --allowedTools TOOLS        canonical snake_case names or aliases; status JSON exposes allowed_tools.available/aliases
   --resume [SESSION.jsonl|session-id|latest]
   --version, -V
 
@@ -146,6 +147,7 @@ Top-level commands:
 ```
 
 `claw acp` is a local discoverability surface for editor-first users: it reports the current ACP/Zed status without starting the runtime. As of April 16, 2026, claw-code does **not** ship an ACP/Zed daemon or JSON-RPC entrypoint yet, and `claw acp serve` is only a status alias until the real protocol surface lands. Status queries exit 0 and expose the same machine-readable contract via `--output-format json`; malformed ACP invocations exit 1 with `kind: unsupported_acp_invocation`.
+`claw dump-manifests` is self-contained: it emits the Rust resolver inventory for the selected workspace (commands, tools, agents, skills, and bootstrap phases) without requiring an upstream Claude Code TypeScript checkout. Use `--manifests-dir PATH` only to scope resolver discovery to another directory.
 
 The command surface is moving quickly. For the canonical live help text, run:
 
@@ -166,8 +168,8 @@ The REPL now exposes a much broader surface than the original minimal shell:
 - plugin management: `/plugin` (with aliases `/plugins`, `/marketplace`)
 
 Notable claw-first surfaces now available directly in slash form:
-- `/skills [list|install <path>|help]`
-- `/agents [list|help]`
+- `/skills [list|show <name>|install <path>|uninstall <name>|help]`
+- `/agents [list|show <name>|create <name>|help]`
 - `/mcp [list|show <server>|help]`
 - `/doctor`
 - `/plugin [list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]`
@@ -184,7 +186,7 @@ rust/
 └── crates/
     ├── api/                # Provider clients + streaming + request preflight
     ├── commands/           # Shared slash-command registry + help rendering
-    ├── compat-harness/     # TS manifest extraction harness
+    ├── compat-harness/     # Compatibility/parity harness utilities
     ├── mock-anthropic-service/ # Deterministic local Anthropic-compatible mock
     ├── plugins/            # Plugin metadata, manager, install/enable/disable surfaces
     ├── runtime/            # Session, config, permissions, MCP, prompts, auth/runtime loop
@@ -197,7 +199,7 @@ rust/
 
 - **api** — provider clients, SSE streaming, request/response types, auth (`ANTHROPIC_API_KEY` + bearer-token support), request-size/context-window preflight
 - **commands** — slash command definitions, parsing, help text generation, JSON/text command rendering
-- **compat-harness** — extracts tool/prompt manifests from upstream TS source
+- **compat-harness** — compatibility and parity helpers for comparing behavior with upstream fixtures
 - **mock-anthropic-service** — deterministic `/v1/messages` mock for CLI parity tests and local harness runs
 - **plugins** — plugin metadata, install/enable/disable/update flows, plugin tool definitions, hook integration surfaces
 - **runtime** — `ConversationRuntime`, config loading, session persistence, permission policy, MCP client lifecycle, system prompt assembly, usage tracking
@@ -210,8 +212,8 @@ rust/
 - **~20K lines** of Rust
 - **9 crates** in workspace
 - **Binary name:** `claw`
-- **Default model:** `claude-opus-4-6`
-- **Default permissions:** `danger-full-access`
+- **Default model:** `claude-opus-4-7`
+- **Default permissions:** `workspace-write`
 
 ## License
 
