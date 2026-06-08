@@ -16,7 +16,7 @@ use crate::types::{
     ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };
 
-use super::{preflight_message_request, Provider, ProviderFuture};
+use super::{preflight_message_request, resolve_model_alias, Provider, ProviderFuture};
 
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -215,18 +215,19 @@ impl OpenAiCompatClient {
         &self,
         request: &MessageRequest,
     ) -> Result<MessageResponse, ApiError> {
-        let request = MessageRequest {
+        let original_model = request.model.clone();
+        let canonical = resolve_model_alias(&request.model);
+
+        let mut request = MessageRequest {
             stream: false,
             ..request.clone()
         };
+        request.model = canonical;
+
         preflight_message_request(&request)?;
         let response = self.send_with_retry(&request).await?;
         let request_id = request_id_from_headers(response.headers());
         let body = response.text().await.map_err(ApiError::from)?;
-        // Some backends return {"error":{"message":"...","type":"...","code":...}}
-        // instead of a valid completion object. Check for this before attempting
-        // full deserialization so the user sees the actual error, not a cryptic
-        // "missing field 'id'" parse failure.
         if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&body) {
             if let Some(err_obj) = raw.get("error") {
                 let msg = err_obj
@@ -258,12 +259,13 @@ impl OpenAiCompatClient {
             }
         }
         let payload = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|error| {
-            ApiError::json_deserialize(self.config.provider_name, &request.model, &body, error)
+            ApiError::json_deserialize(self.config.provider_name, &original_model, &body, error)
         })?;
         let mut normalized = normalize_response(&request.model, payload)?;
         if normalized.request_id.is_none() {
             normalized.request_id = request_id;
         }
+        normalized.model = original_model;
         Ok(normalized)
     }
 
@@ -271,17 +273,25 @@ impl OpenAiCompatClient {
         &self,
         request: &MessageRequest,
     ) -> Result<MessageStream, ApiError> {
-        preflight_message_request(request)?;
-        let response = self
-            .send_with_retry(&request.clone().with_streaming())
-            .await?;
+        let original_model = request.model.clone();
+        let canonical = resolve_model_alias(&request.model);
+
+        let mut streaming_request = request.clone().with_streaming();
+        streaming_request.model = canonical;
+
+        preflight_message_request(&streaming_request)?;
+        let response = self.send_with_retry(&streaming_request).await?;
+
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
             response,
-            parser: OpenAiSseParser::with_context(self.config.provider_name, request.model.clone()),
+            parser: OpenAiSseParser::with_context(
+                self.config.provider_name,
+                original_model.clone(),
+            ),
             pending: VecDeque::new(),
             done: false,
-            state: StreamState::new(request.model.clone()),
+            state: StreamState::new(original_model),
         })
     }
 
@@ -562,6 +572,7 @@ impl StreamState {
                 .delta
                 .reasoning_content
                 .filter(|value| !value.is_empty())
+                .or(choice.delta.reasoning.filter(|value| !value.is_empty()))
                 .or(choice
                     .delta
                     .thinking
@@ -817,6 +828,8 @@ struct ChatMessage {
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
     tool_calls: Vec<ResponseToolCall>,
 }
 
@@ -890,6 +903,8 @@ struct ChunkDelta {
     /// Some providers (GLM, DeepSeek) emit reasoning in `reasoning_content`
     #[serde(default)]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     thinking: Option<ThinkingDelta>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
@@ -1500,6 +1515,7 @@ fn normalize_response(
         .message
         .reasoning_content
         .filter(|value| !value.is_empty())
+        .or(choice.message.reasoning.filter(|value| !value.is_empty()))
     {
         content.push(OutputContentBlock::Thinking {
             thinking,
@@ -1982,6 +1998,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: Some("final answer".to_string()),
                     reasoning_content: Some("hidden thought".to_string()),
+                    reasoning: None,
                     tool_calls: Vec::new(),
                 },
                 finish_reason: Some("stop".to_string()),
@@ -2019,6 +2036,7 @@ mod tests {
                     delta: super::ChunkDelta {
                         content: None,
                         reasoning_content: Some("think".to_string()),
+                        reasoning: None,
                         thinking: None,
                         tool_calls: Vec::new(),
                     },
@@ -2036,6 +2054,7 @@ mod tests {
                         delta: super::ChunkDelta {
                             content: Some(" answer".to_string()),
                             reasoning_content: None,
+                            reasoning: None,
                             thinking: None,
                             tool_calls: Vec::new(),
                         },
